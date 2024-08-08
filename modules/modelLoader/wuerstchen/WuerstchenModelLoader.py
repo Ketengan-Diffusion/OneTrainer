@@ -114,22 +114,31 @@ class WuerstchenModelLoader:
             )
         elif model_type.is_stable_cascade():
             if prior_prior_model_name:
-                with safe_open(prior_prior_model_name, framework="pt") as f:
-                    if any(key.startswith("down_blocks.0.23") for key in f.keys()):
-                        config_filename = "resources/model_config/stable_cascade/stable_cascade_prior_3.6b.json"
-                    else:
-                        config_filename = "resources/model_config/stable_cascade/stable_cascade_prior_1.0b.json"
+                index_path = os.path.join(prior_model_name, "prior", "diffusion_pytorch_model.safetensors.index.json")
+                if os.path.exists(index_path):
+                    with open(index_path, "r") as f:
+                        index = json.load(f)
+                    shards = [os.path.join(prior_model_name, "prior", shard_filename) for shard_filename in index["weight_map"].values()]
+
+                    # Determine config filename based on shard keys
+                    with safe_open(shards[0], framework="pt") as f:
+                        if any(key.startswith("down_blocks.0.23") for key in f.keys()):
+                            config_filename = "resources/model_config/stable_cascade/stable_cascade_prior_3.6b.json"
+                        else:
+                            config_filename = "resources/model_config/stable_cascade/stable_cascade_prior_1.0b.json"
+
                     with open(config_filename, "r") as config_file:
                         prior_config = json.load(config_file)
-                prior_prior = StableCascadeUNet(**prior_config)
-                prior_prior.load_state_dict(convert_stable_cascade_ckpt_to_diffusers(load_file(prior_prior_model_name)))
-                prior_prior.to(dtype=weight_dtypes.prior.torch_dtype())
-            else:
-                prior_prior = StableCascadeUNet.from_pretrained(
-                    prior_model_name,
-                    subfolder="prior",
-                    torch_dtype=weight_dtypes.prior.torch_dtype(),
-                )
+
+                    prior_prior = StableCascadeUNet(**prior_config)
+                
+                    # Load state dict from all shards
+                    state_dict = {}
+                    for shard in shards:
+                        state_dict.update(torch.load(shard, map_location="cpu"))
+                    prior_prior.load_state_dict(state_dict)
+
+                    prior_prior.to(dtype=weight_dtypes.prior.torch_dtype())
 
         prior_tokenizer = CLIPTokenizer.from_pretrained(
             prior_model_name,
